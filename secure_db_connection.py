@@ -17,6 +17,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger('database_connection')
 
+# Check if we're running in Streamlit
+try:
+    import streamlit as st
+    STREAMLIT_AVAILABLE = True
+    logger.info("Streamlit detected - will check for secrets")
+except ImportError:
+    STREAMLIT_AVAILABLE = False
+    logger.info("Not running in Streamlit - will use environment variables")
+
 # Try to import optional dependencies with graceful fallback
 try:
     import pypyodbc as odbc
@@ -34,31 +43,79 @@ except ImportError:
     logger.warning("python-dotenv not available - using OS environment variables only")
     DOTENV_AVAILABLE = False
 
-def load_environment_variables():
+def get_credentials() -> Dict[str, str]:
     """
-    Load environment variables from .env file or environment
-    Returns True if all required variables are present
+    Get database credentials from either Streamlit secrets or environment variables
+    
+    Returns:
+        dict: Dictionary containing DB_SERVER, DB_NAME, DB_UID, and DB_PWD
     """
+    credentials = {}
+    required_vars = ['DB_SERVER', 'DB_NAME', 'DB_UID', 'DB_PWD']
+    
+    # Try to get credentials from Streamlit secrets first
+    if STREAMLIT_AVAILABLE:
+        try:
+            # Check if secrets are available in Streamlit
+            if hasattr(st, 'secrets') and 'db_credentials' in st.secrets:
+                logger.info("Using Streamlit secrets for database credentials")
+                for var in required_vars:
+                    if var in st.secrets['db_credentials']:
+                        credentials[var] = st.secrets['db_credentials'][var]
+                
+                # If we got all credentials from Streamlit secrets, return them
+                if all(var in credentials for var in required_vars):
+                    return credentials
+                else:
+                    missing = [var for var in required_vars if var not in credentials]
+                    logger.warning(f"Missing credentials in Streamlit secrets: {', '.join(missing)}")
+        except Exception as e:
+            logger.warning(f"Error accessing Streamlit secrets: {e}")
+    
+    # Fall back to environment variables
+    logger.info("Falling back to environment variables for database credentials")
     if DOTENV_AVAILABLE:
         load_dotenv()
     
+    for var in required_vars:
+        env_value = os.getenv(var)
+        if env_value:
+            credentials[var] = env_value
+    
+    return credentials
+
+def load_environment_variables():
+    """
+    Load environment variables from Streamlit secrets, .env file, or environment
+    Returns True if all required variables are present
+    """
     required_vars = ['DB_SERVER', 'DB_NAME', 'DB_UID', 'DB_PWD']
-    missing_vars = [var for var in required_vars if not os.getenv(var)]
+    credentials = get_credentials()
+    
+    missing_vars = [var for var in required_vars if var not in credentials]
     
     if missing_vars:
-        logger.warning(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.warning(f"Missing required database credentials: {', '.join(missing_vars)}")
         return False
+    
+    # Store credentials in environment variables for compatibility with existing code
+    for var, value in credentials.items():
+        os.environ[var] = value
     
     return True
 
 def get_connection_string():
-    """Build connection string from environment variables"""
+    """Build connection string from credentials"""
     try:
         driver_name = '{SQL SERVER}'  # Standard SQL Server driver name
-        server = os.getenv('DB_SERVER')
-        database = os.getenv('DB_NAME')
-        uid = os.getenv('DB_UID')
-        pwd = os.getenv('DB_PWD')
+        
+        # Get credentials from either Streamlit secrets or environment variables
+        credentials = get_credentials()
+        
+        server = credentials.get('DB_SERVER')
+        database = credentials.get('DB_NAME')
+        uid = credentials.get('DB_UID')
+        pwd = credentials.get('DB_PWD')
         
         if not all([server, database, uid, pwd]):
             raise ValueError("Missing required database configuration variables")
@@ -360,7 +417,7 @@ def get_flow_data(use_csv=False):
 
 def test_connection() -> Tuple[bool, str]:
     """
-    Test database connection and environment variables
+    Test database connection and credentials
     
     Returns:
         tuple: (success: bool, message: str)
@@ -370,9 +427,15 @@ def test_connection() -> Tuple[bool, str]:
         if not ODBC_AVAILABLE:
             return False, "ODBC driver not available"
         
-        # Check environment variables
+        # Check credentials availability
+        if STREAMLIT_AVAILABLE and hasattr(st, 'secrets') and 'db_credentials' in st.secrets:
+            credentials_source = "Streamlit secrets"
+        else:
+            credentials_source = "environment variables"
+            
+        # Check if all required credentials are available
         if not load_environment_variables():
-            return False, "Required environment variables not found"
+            return False, f"Required database credentials not found in {credentials_source}"
         
         # Try connecting
         connection = create_db_connection()
@@ -394,6 +457,21 @@ def test_connection() -> Tuple[bool, str]:
 
 if __name__ == "__main__":
     # Test the connection when run directly
+    if STREAMLIT_AVAILABLE:
+        print("Running in Streamlit environment")
+        print("Note: Streamlit secrets will only be available when running via 'streamlit run'")
+    else:
+        print("Running in standalone Python environment")
+        
+    # Test credentials sources
+    credentials = get_credentials()
+    if credentials:
+        available_creds = ", ".join(credentials.keys())
+        print(f"Available credentials: {available_creds}")
+    else:
+        print("No credentials found")
+    
+    # Test the connection
     success, message = test_connection()
     if success:
         print("✅ Database connection test successful!")

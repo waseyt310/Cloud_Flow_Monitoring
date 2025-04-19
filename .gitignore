@@ -121,6 +121,7 @@ dmypy.json
 
 # Project specific
 *.csv
+!flow_data_2025.csv
 !requirements.txt
 
 # Windows specific
